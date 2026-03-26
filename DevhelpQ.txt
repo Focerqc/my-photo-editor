@@ -1,9 +1,0 @@
-prompt to update vsix file:
-
-I have finished making changes to the photo editor. Please:
-1. Increment the 'version' in 'package.json' by one minor patch.
-2. Run 'npm run compile'.
-3. Run 'npm run package'.
-4. Print the final installation command for the new .vsix file.
-
-

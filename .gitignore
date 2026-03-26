@@ -1,0 +1,10 @@
+# Ignore the generated extension installers
+*.vsix
+builds/
+
+# Ignore compiled code and dependencies
+out/
+node_modules/
+
+# Ignore testing images
+Ztesting images/
