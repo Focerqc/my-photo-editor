@@ -1,0 +1,43 @@
+{
+  "name": "my-photo-editor",
+  "displayName": "My Photo Editor",
+  "publisher": "quinn",
+  "version": "1.1.0",
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "compile": "tsc -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "A custom editor extension for cropping images directly in Antigravity.",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "myPhotoEditor.cropTool",
+        "displayName": "Photo Editor Crop Tool",
+        "selector": [
+          {
+            "filenamePattern": "*.png"
+          },
+          {
+            "filenamePattern": "*.jpg"
+          },
+          {
+            "filenamePattern": "*.jpeg"
+          }
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/vscode": "^1.107.0",
+    "typescript": "^6.0.2"
+  }
+}
