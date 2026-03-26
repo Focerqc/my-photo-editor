@@ -3,3 +3,4 @@ src/**
 .vscode/**
 tsconfig.json
 *.vsix
+Ztesting images/**

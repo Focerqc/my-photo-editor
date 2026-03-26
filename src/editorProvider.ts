@@ -259,6 +259,9 @@ canvas{display:block;width:100%;height:100%}
   <div class="canvas-wrapper" id="wrapper">
     <canvas id="canvas"></canvas>
     <div class="nav-buttons" id="navButtons">
+      <button id="btnZoomIn">&#10133; Zoom In</button>
+      <button id="btnZoomOut">&#10134; Zoom Out</button>
+      <div class="nav-divider"></div>
       <button id="btnFitTop">&#11014; Fit Width &middot; Top</button>
       <button id="btnFitBottom">&#11015; Fit Width &middot; Bottom</button>
       <div class="nav-divider"></div>
@@ -327,6 +330,8 @@ var btnMirrorConfirm=document.getElementById('btnMirrorConfirm');
 var btnSave=document.getElementById('btnSave');
 var btnFitTop=document.getElementById('btnFitTop');
 var btnFitBottom=document.getElementById('btnFitBottom');
+var btnZoomIn=document.getElementById('btnZoomIn');
+var btnZoomOut=document.getElementById('btnZoomOut');
 var statusBar=document.getElementById('statusBar');
 var titleToggle=document.getElementById('titleToggle');
 var btnAnnotationMode=document.getElementById('btnAnnotationMode');
@@ -351,7 +356,7 @@ var btnSavedAnnotations=document.getElementById('btnSavedAnnotations');
 var IMAGE_SRC='${imageUri}';
 var ORIG_FILENAME='${originalFileName}';
 var IS_EXPORT=ORIG_FILENAME.indexOf('_annotated')!==-1;
-var HANDLE_R=6,HIT_R=12,MIN_CROP=10,SBAR_SIZE=8,SBAR_PAD=4,SBAR_MIN_THUMB=30;
+var HANDLE_R=6,HIT_R=12,MIN_CROP=10,SBAR_SIZE=40,SBAR_PAD=4,SBAR_MIN_THUMB=30;
 
 var originalImage=null,currentImage=null;
 var baseScale=1,zoomFactor=1,offsetX=0,offsetY=0;
@@ -376,6 +381,7 @@ var currentFiles=[];
 function sizeCanvas(){if(!wrapper||!canvas)return;canvas.width=wrapper.clientWidth;canvas.height=wrapper.clientHeight}
 function computeFit(img){var pad=40;if(!wrapper)return 1;return Math.min(1,(wrapper.clientWidth-pad)/img.width,(wrapper.clientHeight-pad)/img.height)}
 function centerImage(){if(!currentImage)return;var s=eff();offsetX=(canvas.width-currentImage.width*s)/2;offsetY=(canvas.height-currentImage.height*s)/2}
+function clampOffsets(){if(!currentImage)return;var s=eff(),iw=currentImage.width*s,ih=currentImage.height*s;if(iw>canvas.width)offsetX=Math.max(-(iw-canvas.width),Math.min(0,offsetX));else offsetX=(canvas.width-iw)/2;if(ih>canvas.height)offsetY=Math.max(-(ih-canvas.height),Math.min(0,offsetY));else offsetY=(canvas.height-ih)/2}
 
 function roundRect(x,y,w,h,r){if(w<2*r)r=w/2;if(h<2*r)r=h/2;ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
 
@@ -386,12 +392,16 @@ function drawScrollbars(){
     var thumbFrac=Math.min(1,canvas.width/imgW);var thumbW=Math.max(SBAR_MIN_THUMB,thumbFrac*tW);
     var scrollRange=imgW-canvas.width;var scrollPos=Math.max(0,Math.min(1,-offsetX/scrollRange));var thumbX=tX+scrollPos*(tW-thumbW);
     hBar={tX:tX,tY:tY,tW:tW,tH:tH,thumbX:thumbX,thumbW:thumbW,scrollRange:scrollRange};
-    ctx.fillStyle='rgba(0,0,0,0.25)';roundRect(tX,tY,tW,tH,4);ctx.fill();ctx.fillStyle='rgba(200,200,200,0.45)';roundRect(thumbX,tY,thumbW,tH,4);ctx.fill()}
+    ctx.fillStyle='rgba(255,255,255,0.15)';roundRect(tX,tY,tW,tH,20);ctx.fill();
+    ctx.fillStyle='rgba(30,30,30,0.9)';roundRect(thumbX,tY,thumbW,tH,20);ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=1.5;roundRect(thumbX,tY,thumbW,tH,20);ctx.stroke()}
   if(showV){var vtX=canvas.width-SBAR_SIZE-SBAR_PAD,vtY=SBAR_PAD,vtW=SBAR_SIZE,vtH=canvas.height-SBAR_PAD*2-(showH?SBAR_SIZE+SBAR_PAD:0);
     var vTF=Math.min(1,canvas.height/imgH);var vTH=Math.max(SBAR_MIN_THUMB,vTF*vtH);
     var vSR=imgH-canvas.height;var vSP=Math.max(0,Math.min(1,-offsetY/vSR));var vTY=vtY+vSP*(vtH-vTH);
     vBar={tX:vtX,tY:vtY,tW:vtW,tH:vtH,thumbY:vTY,thumbH:vTH,scrollRange:vSR};
-    ctx.fillStyle='rgba(0,0,0,0.25)';roundRect(vtX,vtY,vtW,vtH,4);ctx.fill();ctx.fillStyle='rgba(200,200,200,0.45)';roundRect(vtX,vTY,vtW,vTH,4);ctx.fill()}
+    ctx.fillStyle='rgba(255,255,255,0.15)';roundRect(vtX,vtY,vtW,vtH,20);ctx.fill();
+    ctx.fillStyle='rgba(30,30,30,0.9)';roundRect(vtX,vTY,vtW,vTH,20);ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=1.5;roundRect(vtX,vTY,vtW,vTH,20);ctx.stroke()}
 }
 
 function drawAnnotations(){
@@ -512,8 +522,8 @@ canvas.addEventListener('mousedown',function(e){
   var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
   if(hitHBar(mx,my)){drag={type:'scrollH',startMouse:{x:mx,y:my},origOffset:{x:offsetX,y:offsetY}};return}
   if(hitVBar(mx,my)){drag={type:'scrollV',startMouse:{x:mx,y:my},origOffset:{x:offsetX,y:offsetY}};return}
-  if(hitHTrack(mx,my)&&hBar){var frac=(mx-hBar.tX-hBar.thumbW/2)/(hBar.tW-hBar.thumbW);frac=Math.max(0,Math.min(1,frac));offsetX=-frac*hBar.scrollRange;draw();drag={type:'scrollH',startMouse:{x:mx,y:my},origOffset:{x:offsetX,y:offsetY}};return}
-  if(hitVTrack(mx,my)&&vBar){var vf=(my-vBar.tY-vBar.thumbH/2)/(vBar.tH-vBar.thumbH);vf=Math.max(0,Math.min(1,vf));offsetY=-vf*vBar.scrollRange;draw();drag={type:'scrollV',startMouse:{x:mx,y:my},origOffset:{x:offsetX,y:offsetY}};return}
+  if(hitHTrack(mx,my)&&hBar){var dir=mx<hBar.thumbX?1:-1;offsetX+=dir*canvas.width*0.8;clampOffsets();draw();return}
+  if(hitVTrack(mx,my)&&vBar){var dir=my<hBar.thumbY?1:-1;offsetY+=dir*canvas.height*0.8;clampOffsets();draw();return}
   if(annotationMode){
     if(activeTool){var ip=scrToImg(mx,my);annotDrag={type:'draw',startImg:ip,tool:activeTool};return}
     var hitA=hitAnnotation(mx,my);
@@ -544,7 +554,7 @@ canvas.addEventListener('mousemove',function(e){
   }
   if(!drag){canvas.style.cursor=(annotationMode&&activeTool)?'crosshair':(annotationMode&&hitAnnotation(mx,my))?'move':'default';return}
   var dx=mx-drag.startMouse.x,dy=my-drag.startMouse.y;
-  if(drag.type==='pan'){offsetX=drag.origOffset.x+dx;offsetY=drag.origOffset.y+dy;canvas.style.cursor='grabbing'}
+  if(drag.type==='pan'){offsetX=drag.origOffset.x+dx;offsetY=drag.origOffset.y+dy;clampOffsets();canvas.style.cursor='grabbing'}
   else if(drag.type==='mirror'){
     var cip=scrToImg(mx,my);var sip=drag.startImg;
     mirrorBox={x:Math.min(sip.x,cip.x),y:Math.min(sip.y,cip.y),w:Math.abs(cip.x-sip.x),h:Math.abs(cip.y-sip.y)};
@@ -553,8 +563,7 @@ canvas.addEventListener('mousemove',function(e){
   else if(drag.type.indexOf('scroll')>=0){
     if(drag.type==='scrollH'){var hf=(mx-drag.startMouse.x)/(hBar.tW-hBar.thumbW);offsetX=drag.origOffset.x-hf*hBar.scrollRange}
     else{var vf=(my-drag.startMouse.y)/(vBar.tH-vBar.thumbH);offsetY=drag.origOffset.y-vf*vBar.scrollRange}
-    offsetX=Math.max(-(currentImage.width*eff()-canvas.width),Math.min(0,offsetX));
-    offsetY=Math.max(-(currentImage.height*eff()-canvas.height),Math.min(0,offsetY));
+    clampOffsets();
   }
   else if(drag.type==='move'){
     var s=eff();crop.x=Math.max(0,Math.min(currentImage.width-crop.w,drag.origCrop.x+dx/s));
@@ -573,7 +582,7 @@ canvas.addEventListener('mousemove',function(e){
   draw();
 });
 
-canvas.addEventListener('mouseup',function(){
+window.addEventListener('mouseup',function(){
   if(annotDrag&&annotDrag.type==='draw'&&annotDrag.currentImg){
     var si=annotDrag.startImg,ci=annotDrag.currentImg,t=annotDrag.tool;
     colorCounters[t.color]=(colorCounters[t.color]||0)+1;
@@ -585,9 +594,18 @@ canvas.addEventListener('mouseup',function(){
 });
 
 canvas.addEventListener('wheel',function(e){
-  e.preventDefault();var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top,ip=scrToImg(mx,my);
-  zoomFactor=Math.max(0.1,Math.min(30,zoomFactor*(e.deltaY>0?0.9:1.1)));
-  var ns=eff();offsetX=mx-ip.x*ns;offsetY=my-ip.y*ns;draw();
+  e.preventDefault();var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  if(e.ctrlKey || e.metaKey){
+    var ip=scrToImg(mx,my);zoomFactor=Math.max(0.1,Math.min(30,zoomFactor*(e.deltaY>0?0.9:1.1)));
+    var ns=eff();offsetX=mx-ip.x*ns;offsetY=my-ip.y*ns;
+  }else{
+    var dx=e.deltaX,dy=e.deltaY;
+    if(e.shiftKey&&dx===0){dx=dy;dy=0}
+    if(e.deltaMode===1){dx*=30;dy*=30}else if(e.deltaMode===2){dx*=canvas.width;dy*=canvas.height}
+    offsetX-=dx;offsetY-=dy;
+  }
+  clampOffsets();
+  draw();
 },{passive:false});
 
 function exitCropMode(){cropMode=false;crop=null;btnCrop.textContent='Crop';btnCancel.classList.add('hidden')}
@@ -601,6 +619,9 @@ btnCrop.addEventListener('click',function(){
 btnCancel.addEventListener('click',function(){exitCropMode();draw()});
 btnReset.addEventListener('click',function(){if(!originalImage)return;currentImage=originalImage;exitCropMode();draw();btnSave.disabled=true});
 btnFit.addEventListener('click',function(){if(!currentImage)return;baseScale=computeFit(currentImage);zoomFactor=1;centerImage();draw()});
+function zoomAtCenter(f){if(!currentImage)return;var mx=canvas.width/2,my=canvas.height/2,ip=scrToImg(mx,my);zoomFactor=Math.max(0.1,Math.min(30,zoomFactor*f));var ns=eff();offsetX=mx-ip.x*ns;offsetY=my-ip.y*ns;draw()}
+btnZoomIn.addEventListener('click',function(){zoomAtCenter(1.2)});
+btnZoomOut.addEventListener('click',function(){zoomAtCenter(0.8)});
 btnMirror.addEventListener('click',function(){
   if(!currentImage||cropMode||annotationMode)return;
   mirrorMode=!mirrorMode;mirrorBox=null;
