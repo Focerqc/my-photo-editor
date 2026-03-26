@@ -3,6 +3,7 @@ import * as path from 'path';
 
 export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.CustomDocument> {
   private readonly _context: vscode.ExtensionContext;
+  private readonly _panels = new Set<vscode.WebviewPanel>();
 
   constructor(context: vscode.ExtensionContext) {
     this._context = context;
@@ -36,13 +37,17 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
       ],
     };
 
+    this._panels.add(webviewPanel);
+    webviewPanel.onDidDispose(() => this._panels.delete(webviewPanel));
+
     const imageUri = webviewPanel.webview.asWebviewUri(document.uri);
     const fsPath = document.uri.fsPath;
     const imageDir = path.dirname(fsPath);
     const originalFileName = path.basename(fsPath);
     const sep = path.sep;
     const version = vscode.extensions.getExtension('quinn.my-photo-editor')?.packageJSON.version || '1.0.0';
-    webviewPanel.webview.html = this._getHtmlForWebview(imageUri, originalFileName, version);
+    const presets = this._context.globalState.get<any[]>('cropPresets') || [{ amount: 25, edge: "top", title: "Standard" }];
+    webviewPanel.webview.html = this._getHtmlForWebview(imageUri, originalFileName, version, presets);
 
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
@@ -126,6 +131,10 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
               }));
             webviewPanel.webview.postMessage({ type: 'savedAnnotationsList', files });
           } catch { webviewPanel.webview.postMessage({ type: 'savedAnnotationsList', files: [] }); }
+
+          // Also send crop presets when list is requested (usually on load)
+          const currentPresets = this._context.globalState.get<any[]>('cropPresets') || [{ amount: 25, edge: 'top', title: 'Standard' }];
+          webviewPanel.webview.postMessage({ type: 'cropPresets', presets: currentPresets });
           break;
         }
         case 'deleteAnnotationSet': {
@@ -159,6 +168,14 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
           }
           break;
         }
+        case 'updateCropPresets': {
+          await this._context.globalState.update('cropPresets', message.presets);
+          // Broadcast to all panels to keep them in sync
+          for (const panel of this._panels) {
+            panel.webview.postMessage({ type: 'cropPresets', presets: message.presets });
+          }
+          break;
+        }
       }
     });
   }
@@ -172,7 +189,7 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
   }
 
   // --- Webview HTML ---
-  private _getHtmlForWebview(imageUri: vscode.Uri, originalFileName: string, version: string): string {
+  private _getHtmlForWebview(imageUri: vscode.Uri, originalFileName: string, version: string, presets: any[]): string {
     return /* html */ `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Photo Editor</title>
 <style>
@@ -257,11 +274,15 @@ canvas{display:block;width:100%;height:100%}
 .trim-item:hover{background:rgba(255,255,255,0.08)}
 .trim-item .edge-tag{font-size:8px;font-weight:bold;padding:1px 6px;border-radius:3px;margin-right:8px;min-width:32px;text-align:center}
 .trim-tag-top{background:#2ea043;color:#fff}.trim-tag-bottom{background:#0e639c;color:#fff}
+.trim-title{opacity:0.6;font-style:italic;margin-left:8px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px}
+.trim-item .amount{font-weight:700;color:#fff}
 .trim-add-panel{padding:12px;background:rgba(255,255,255,0.03);border-top:1px solid rgba(255,255,255,0.1);display:flex;flex-direction:column;gap:10px}
 .trim-add-label{font-size:9px;font-weight:bold;opacity:0.6;text-transform:uppercase;margin-bottom:-4px}
 .trim-add-footer{display:flex;gap:4px;margin-top:4px}
 .trim-plus-btn{width:100%;padding:8px;background:none;border:1px dashed rgba(255,255,255,0.2);color:#aaa;border-radius:4px;cursor:pointer;font-size:11px;transition:all 0.1s}
 .trim-plus-btn:hover{background:rgba(255,255,255,0.05);color:#fff;border-color:rgba(255,255,255,0.4)}
+@keyframes rainbow{0.0%{color:#f1c40f} 20%{color:#2ecc71} 40%{color:#3498db} 60%{color:#9b59b6} 80%{color:#e74c3c} 100%{color:#f1c40f}}
+.rainbow-text{animation:rainbow 3s linear infinite;font-weight:900;letter-spacing:1px;font-size:11px;margin-left:12px;text-shadow:0 0 2px rgba(0,0,0,0.5)}
 </style></head>
 <body>
 <div class="toolbar">
@@ -274,9 +295,16 @@ canvas{display:block;width:100%;height:100%}
     <div id="filePrefix" style="font-size:8px;opacity:0.4;text-transform:uppercase;letter-spacing:0.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
     <div id="fileMain" style="font-size:11px;font-weight:500;color:rgba(255,255,255,0.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   </div>
-  <span id="cropPresetsWrap" class="hidden" style="position:relative;margin-left:12px">
-    <button class="btn-secondary" id="btnCropPresets">&#9991; Trim</button>
-    <div class="saved-dropdown hidden" id="cropPresetsDropdown" style="min-width:180px"></div>
+  <span id="unsavedIndicatorMain" class="hidden rainbow-text">UNSAVED!!</span>
+  <span id="cropPresetsWrap" class="hidden" style="display:flex;gap:4px;margin-left:12px">
+    <div style="position:relative">
+      <button class="btn-secondary" id="btnCropPresetsTop">&#11014; Top</button>
+      <div class="saved-dropdown hidden" id="cropPresetsDropdownTop" style="min-width:200px"></div>
+    </div>
+    <div style="position:relative">
+      <button class="btn-secondary" id="btnCropPresetsBottom">&#11015; Bottom</button>
+      <div class="saved-dropdown hidden" id="cropPresetsDropdownBottom" style="min-width:200px"></div>
+    </div>
   </span>
 </div>
   <span id="savedAnnotationsWrap" class="hidden" style="position:relative">
@@ -311,7 +339,6 @@ canvas{display:block;width:100%;height:100%}
     <button class="atb-line" style="background:#f1c40f;color:#333" data-tool="line" data-color="yellow" title="Yellow Line">&#10515;</button>
   </div>
   <div class="sep"></div>
-  <span id="unsavedIndicator" class="hidden" style="color:#f1c40f;font-size:10px;font-weight:bold;margin-right:8px">&bullet; UNSAVED CHANGES</span>
   <button class="atb-save-btn" id="btnSaveAnnotations">💾 Annotation save</button>
   <button class="atb-save-btn" id="btnNewSaveAnnotations" style="background:#0e639c!important">💾 New Annotation save</button>
 </div>
@@ -319,8 +346,9 @@ canvas{display:block;width:100%;height:100%}
   <div class="canvas-wrapper" id="wrapper">
     <canvas id="canvas"></canvas>
     <div class="nav-buttons" id="navButtons">
-      <button id="btnZoomIn">&#10133; Zoom In</button>
-      <button id="btnZoomOut">&#10134; Zoom Out</button>
+  <button class="nav-btn" id="btnScrollMode" style="border-bottom:2px solid #555;margin-bottom:8px">Wheel: ZOOM</button>
+  <button class="nav-btn" id="btnZoomIn">+ Zoom In</button>
+  <button class="nav-btn" id="btnZoomOut">&minus; Zoom Out</button>
       <div class="nav-divider"></div>
       <button id="btnFitTop">&#11014; Fit Width &middot; Top</button>
       <button id="btnFitBottom">&#11015; Fit Width &middot; Bottom</button>
@@ -441,16 +469,20 @@ var IS_EXPORT=ORIG_FILENAME.indexOf('_annotated')!==-1;
 var HANDLE_R=6,HIT_R=12,MIN_CROP=10,SBAR_SIZE=20,SBAR_PAD=4,SBAR_MIN_THUMB=30;
 
 var originalImage=null,currentImage=null;
-var baseScale=1,zoomFactor=1,offsetX=0,offsetY=0;
+var zoomFactor=1,offsetX=0,offsetY=0;
+var scrollMode='zoom';
+var btnScrollMode=document.getElementById('btnScrollMode');
 function eff(){return baseScale*zoomFactor}
 function scrToImg(sx,sy){var s=eff();return{x:(sx-offsetX)/s,y:(sy-offsetY)/s}}
 var cropMode=false,crop=null,drag=null,hBar=null,vBar=null;
 var mirrorMode=false,mirrorBox=null,mirrorOffsetX=0;
-var cropPresets=[{amount:25,edge:'top'}];
+var cropPresets=${JSON.stringify(presets)};
 var isAddingTrim=false;
-var btnCropPresets=document.getElementById('btnCropPresets');
+var btnCropPresetsTop=document.getElementById('btnCropPresetsTop');
+var btnCropPresetsBottom=document.getElementById('btnCropPresetsBottom');
 var cropPresetsWrap=document.getElementById('cropPresetsWrap');
-var cropPresetsDropdown=document.getElementById('cropPresetsDropdown');
+var cropPresetsDropdownTop=document.getElementById('cropPresetsDropdownTop');
+var cropPresetsDropdownBottom=document.getElementById('cropPresetsDropdownBottom');
 
 /* ── annotation state ─────────────── */
 var annotationMode=false;
@@ -467,7 +499,7 @@ var nextVersion=1;
 var currentFiles=[];
 var scrollbarW=0,scrollbarH=0;
 var isDirty=false;
-function setDirty(v){isDirty=v;var el=document.getElementById('unsavedIndicator');if(el)el.classList.toggle('hidden',!v)}
+function setDirty(v){isDirty=v;var el=document.getElementById('unsavedIndicatorMain');if(el)el.classList.toggle('hidden',!v)}
 
 function sizeCanvas(){if(!wrapper||!canvas)return;canvas.width=wrapper.clientWidth;canvas.height=wrapper.clientHeight}
 function computeFit(img){var pad=40;if(!wrapper)return 1;return Math.min(1,(wrapper.clientWidth-pad)/img.width,(wrapper.clientHeight-pad)/img.height)}
@@ -726,11 +758,13 @@ window.addEventListener('mouseup',function(){
 
 canvas.addEventListener('wheel',function(e){
   e.preventDefault();var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
-  if(e.ctrlKey || e.metaKey){
+  var isZoom=(scrollMode==='zoom');
+  if(e.ctrlKey||e.metaKey)isZoom=!isZoom;
+  if(isZoom){
     var ip=scrToImg(mx,my);zoomFactor=Math.max(0.1,Math.min(30,zoomFactor*(e.deltaY>0?0.9:1.1)));
     var ns=eff();offsetX=mx-ip.x*ns;offsetY=my-ip.y*ns;
   }else{
-    var dx=e.deltaX,dy=e.deltaY;
+    var dx=e.deltaX*0.25,dy=e.deltaY*0.25;
     if(e.shiftKey&&dx===0){dx=dy;dy=0}
     if(e.deltaMode===1){dx*=30;dy*=30}else if(e.deltaMode===2){dx*=canvas.width;dy*=canvas.height}
     offsetX-=dx;offsetY-=dy;
@@ -740,46 +774,53 @@ canvas.addEventListener('wheel',function(e){
 },{passive:false});
 
 function renderCropPresets(){
-  cropPresetsDropdown.innerHTML='';
-  cropPresets.forEach(function(p,idx){
-    var div=document.createElement('div');div.className='trim-item';
-    var left=document.createElement('div');left.style.display='flex';left.style.alignItems='center';
-    var tag=document.createElement('span');tag.className='edge-tag trim-tag-'+p.edge;tag.textContent=p.edge.toUpperCase();
-    left.appendChild(tag);left.appendChild(document.createTextNode(p.amount+'px'));
-    div.appendChild(left);
-    div.onclick=function(){applyTrim(p.amount,p.edge);cropPresetsDropdown.classList.add('hidden')};
-    var del=document.createElement('span');del.style.color='#e74c3c';del.style.cursor='pointer';del.textContent='×';del.style.padding='4px 8px';del.style.opacity='0.6';
-    del.onclick=function(e){e.stopPropagation();cropPresets.splice(idx,1);vscodeApi.postMessage({type:'updateCropPresets',presets:cropPresets});renderCropPresets()};
-    div.appendChild(del);
-    cropPresetsDropdown.appendChild(div);
-  });
+  cropPresetsDropdownTop.innerHTML='';
+  cropPresetsDropdownBottom.innerHTML='';
+  
+  var tops = cropPresets.filter(function(p){return p.edge==='top'});
+  var bots = cropPresets.filter(function(p){return p.edge==='bottom'});
 
-  if(!isAddingTrim){
-    var plus=document.createElement('button');plus.className='trim-plus-btn';plus.innerHTML='<b>+</b> Add New Trim';
-    plus.onclick=function(e){e.stopPropagation();isAddingTrim=true;renderCropPresets()};
-    var pad=document.createElement('div');pad.style.padding='8px';pad.appendChild(plus);
-    cropPresetsDropdown.appendChild(pad);
-  }else{
-    var pnl=document.createElement('div');pnl.className='trim-add-panel';
-    pnl.innerHTML='<div class="trim-add-label">New Trim Amount</div>';
-    var inp=document.createElement('input');inp.type='number';inp.placeholder='Pixels...';inp.value='50';
-    pnl.appendChild(inp);
-    var edge='top';
-    var toggle=document.createElement('div');toggle.className='trim-edge-toggle';
-    var bT=document.createElement('button');bT.textContent='TOP';bT.className='active';
-    var bB=document.createElement('button');bB.textContent='BOTTOM';
-    bT.onclick=function(){edge='top';bT.className='active';bB.className=''};
-    bB.onclick=function(){edge='bottom';bB.className='active';bT.className=''};
-    toggle.appendChild(bT);toggle.appendChild(bB);pnl.appendChild(toggle);
-    var foot=document.createElement('div');foot.className='trim-add-footer';
-    var cBtn=document.createElement('button');cBtn.textContent='Cancel';cBtn.className='btn-secondary';cBtn.style.flex='1';cBtn.style.fontSize='10px';
-    cBtn.onclick=function(e){e.stopPropagation();isAddingTrim=false;renderCropPresets()};
-    var aBtn=document.createElement('button');aBtn.textContent='Add';aBtn.className='btn-primary';aBtn.style.flex='1';aBtn.style.fontSize='10px';
-    aBtn.onclick=function(e){e.stopPropagation();var amt=parseInt(inp.value);if(!isNaN(amt)){cropPresets.push({amount:amt,edge:edge});vscodeApi.postMessage({type:'updateCropPresets',presets:cropPresets});isAddingTrim=false;renderCropPresets()}};
-    foot.appendChild(cBtn);foot.appendChild(aBtn);pnl.appendChild(foot);
-    cropPresetsDropdown.appendChild(pnl);
-    setTimeout(function(){inp.focus();inp.select()},10);
+  function buildItems(list, container, defaultEdge){
+    list.forEach(function(p){
+      var idx = cropPresets.indexOf(p);
+      var div=document.createElement('div');div.className='trim-item';
+      var left=document.createElement('div');left.style.display='flex';left.style.alignItems='center';
+      var tag=document.createElement('span');tag.className='edge-tag trim-tag-'+p.edge;tag.textContent=p.edge.toUpperCase();
+      var amt=document.createElement('span');amt.className='amount';amt.textContent=p.amount+'px';
+      left.appendChild(tag);left.appendChild(amt);
+      if(p.title){var t=document.createElement('span');t.className='trim-title';t.textContent=p.title;left.appendChild(t)}
+      div.appendChild(left);
+      div.onclick=function(){applyTrim(p.amount,p.edge);container.classList.add('hidden')};
+      var del=document.createElement('span');del.style.color='#e74c3c';del.style.cursor='pointer';del.textContent='×';del.style.padding='4px 8px';del.style.opacity='0.6';
+      del.onclick=function(e){e.stopPropagation();cropPresets.splice(idx,1);vscodeApi.postMessage({type:'updateCropPresets',presets:cropPresets});renderCropPresets()};
+      div.appendChild(del);
+      container.appendChild(div);
+    });
+
+    if(isAddingTrim && isAddingTrim.edge === defaultEdge){
+      var pnl=document.createElement('div');pnl.className='trim-add-panel';
+      pnl.innerHTML='<div class="trim-add-label">New '+defaultEdge.toUpperCase()+' Trim</div>';
+      var inpVal=document.createElement('input');inpVal.type='number';inpVal.placeholder='Pixels...';inpVal.value='50';inpVal.style.marginBottom='4px';
+      var inpTitle=document.createElement('input');inpTitle.type='text';inpTitle.placeholder='Short title (optional)';inpTitle.maxLength=15;
+      pnl.appendChild(inpVal);pnl.appendChild(inpTitle);
+      var foot=document.createElement('div');foot.className='trim-add-footer';
+      var cBtn=document.createElement('button');cBtn.textContent='Cancel';cBtn.className='btn-secondary';cBtn.style.flex='1';
+      cBtn.onclick=function(e){e.stopPropagation();isAddingTrim=false;renderCropPresets()};
+      var aBtn=document.createElement('button');aBtn.textContent='Add';aBtn.className='btn-primary';aBtn.style.flex='2';
+      aBtn.onclick=function(e){e.stopPropagation();var amt=parseInt(inpVal.value);if(!isNaN(amt)){cropPresets.push({amount:amt,edge:defaultEdge,title:inpTitle.value.trim()});vscodeApi.postMessage({type:'updateCropPresets',presets:cropPresets});isAddingTrim=false;renderCropPresets()}};
+      foot.appendChild(cBtn);foot.appendChild(aBtn);pnl.appendChild(foot);
+      container.appendChild(pnl);
+      setTimeout(function(){inpVal.focus();inpVal.select()},10);
+    } else {
+      var plus=document.createElement('button');plus.className='trim-plus-btn';plus.innerHTML='<b>+</b> Add New '+defaultEdge.toUpperCase();
+      plus.onclick=function(e){e.stopPropagation();isAddingTrim={edge:defaultEdge};renderCropPresets()};
+      var pad=document.createElement('div');pad.style.padding='8px';pad.appendChild(plus);
+      container.appendChild(pad);
+    }
   }
+
+  buildItems(tops, cropPresetsDropdownTop, 'top');
+  buildItems(bots, cropPresetsDropdownBottom, 'bottom');
 }
 function applyTrim(amt,edge){
   if(!crop)return;
@@ -791,9 +832,11 @@ function applyTrim(amt,edge){
   }
   draw();
 }
-btnCropPresets.onclick=function(e){e.stopPropagation();cropPresetsDropdown.classList.toggle('hidden')};
-window.addEventListener('click',function(){cropPresetsDropdown.classList.add('hidden')});
-cropPresetsDropdown.onclick=function(e){e.stopPropagation()};
+btnCropPresetsTop.onclick=function(e){e.stopPropagation();cropPresetsDropdownTop.classList.toggle('hidden');cropPresetsDropdownBottom.classList.add('hidden')};
+btnCropPresetsBottom.onclick=function(e){e.stopPropagation();cropPresetsDropdownBottom.classList.toggle('hidden');cropPresetsDropdownTop.classList.add('hidden')};
+window.addEventListener('click',function(){cropPresetsDropdownTop.classList.add('hidden');cropPresetsDropdownBottom.classList.add('hidden')});
+cropPresetsDropdownTop.onclick=function(e){e.stopPropagation()};
+cropPresetsDropdownBottom.onclick=function(e){e.stopPropagation()};
 
 function toggleCrop(next){
   if(!currentImage||IS_EXPORT)return;
@@ -827,6 +870,11 @@ btnFit.addEventListener('click',function(){if(!currentImage)return;baseScale=com
 function zoomAtCenter(f){if(!currentImage)return;var mx=canvas.width/2,my=canvas.height/2,ip=scrToImg(mx,my);zoomFactor=Math.max(0.1,Math.min(30,zoomFactor*f));var ns=eff();offsetX=mx-ip.x*ns;offsetY=my-ip.y*ns;draw()}
 btnZoomIn.addEventListener('click',function(){zoomAtCenter(1.2)});
 btnZoomOut.addEventListener('click',function(){zoomAtCenter(0.8)});
+btnScrollMode.onclick=function(){
+  scrollMode=(scrollMode==='zoom'?'scroll':'zoom');
+  btnScrollMode.innerHTML='Wheel: '+(scrollMode==='zoom'?'ZOOM':'SCROLL');
+  btnScrollMode.style.color=(scrollMode==='scroll'?'#f1c40f':'#fff');
+};
 btnMirror.addEventListener('click',function(){
   if(!currentImage||cropMode||annotationMode)return;
   mirrorMode=!mirrorMode;mirrorBox=null;mirrorOffsetX=0;
@@ -853,11 +901,12 @@ function confirmMirror(){
   loadImage(off.toDataURL(),function(img){currentImage=img;mirrorBox=null;btnMirrorConfirm.classList.add('hidden');btnMirrorX.classList.add('hidden');mirrorToolbarButtons.classList.add('hidden');draw();btnSave.disabled=false});
 }
 
-btnFitTop.addEventListener('click',function(){
+function fitWidthTop(){
   if(!currentImage)return;var padLR=40,padTB=annotationMode?60:20;
   baseScale=computeFit(currentImage);zoomFactor=(canvas.width-padLR*2)/(currentImage.width*baseScale);
-  offsetX=padLR;offsetY=padTB;draw();
-});
+  offsetX=padLR;offsetY=padTB;clampOffsets();draw();
+}
+btnFitTop.addEventListener('click',fitWidthTop);
 btnFitBottom.addEventListener('click',function(){
   if(!currentImage)return;var padLR=40,padTB=20;
   baseScale=computeFit(currentImage);zoomFactor=(canvas.width-padLR*2)/(currentImage.width*baseScale);
@@ -888,12 +937,7 @@ function toggleAnnotationMode(force){
   btnAnnotationMode.classList.toggle('active',annotationMode);annotToolbar.classList.toggle('hidden',!annotationMode);notesPanel.classList.toggle('hidden',!annotationMode);resizer.classList.toggle('hidden',!annotationMode);
   if(annotationMode){
     navButtons.classList.add('sidebar-style');sidebarNav.appendChild(navButtons);
-    // Fit width logic
-    sizeCanvas();drawScrollbars();
-    var padLR=40;var cw=canvas.width-scrollbarW;
-    var oldS=eff(),oldImgY=-offsetY/oldS;
-    zoomFactor=(cw-padLR*2)/(currentImage.width*baseScale);
-    var newS=eff();offsetX=padLR;offsetY=-oldImgY*newS;
+    setTimeout(function(){if(btnFitTop)btnFitTop.click()},50);
   }
   else{navButtons.classList.remove('sidebar-style');wrapper.appendChild(navButtons);activeTool=null}
   clampOffsets();draw();
