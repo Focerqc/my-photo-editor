@@ -95,7 +95,10 @@ class PhotoEditorProvider {
                                 version: baseName.substring(baseName.lastIndexOf('_A') + 1) || 'A1',
                                 source: originalFileName,
                                 timestamp: new Date().toISOString(),
-                                software: 'Photo Editor (Antigravity Edition)'
+                                software: 'Photo Editor (Antigravity Edition)',
+                                image_width: message.imageWidth,
+                                image_height: message.imageHeight,
+                                coordinate_origin: 'top-left'
                             },
                             annotations: message.annotations
                         };
@@ -690,7 +693,7 @@ function renderNotes(){
   for(var i=0;i<annotations.length;i++){(function(a,idx){
     var div=document.createElement('div');div.className='note-item'+(a.id===selectedAnnotId?' selected':'');div.style.borderLeftColor=COLOR_HEX[a.color];
     var hdr=document.createElement('div');hdr.className='note-item-header';
-    var lbl=document.createElement('span');lbl.className='note-item-label';lbl.textContent=a.id;
+    var lbl=document.createElement('span');lbl.className='note-item-label';lbl.textContent=a.label || a.id;
     var del=document.createElement('button');del.className='note-delete-btn';del.textContent='x';del.title='Delete';
     del.addEventListener('click',function(e){e.stopPropagation();annotations.splice(idx,1);if(selectedAnnotId===a.id)selectedAnnotId=null;setDirty(true);renderNotes();draw()});
     hdr.appendChild(lbl);hdr.appendChild(del);div.appendChild(hdr);
@@ -698,6 +701,9 @@ function renderNotes(){
     if(a.type==='box'){coords.textContent='x:'+Math.round(a.x)+' y:'+Math.round(a.y)+' w:'+Math.round(a.w)+' h:'+Math.round(a.h)}
     else{coords.textContent='x1:'+Math.round(a.x1)+' y1:'+Math.round(a.y1)+' x2:'+Math.round(a.x2)+' y2:'+Math.round(a.y2)}
     div.appendChild(coords);
+    var li=document.createElement('input');li.className='note-item-input';li.style.marginBottom='4px';li.placeholder='Label (e.g. Connect Button)';li.value=a.label||'';
+    li.addEventListener('input',function(){a.label=li.value;lbl.textContent=a.label||a.id;setDirty(true)});li.addEventListener('click',function(e){e.stopPropagation()});
+    div.appendChild(li);
     var ta=document.createElement('textarea');ta.className='note-item-input';ta.placeholder='Add note...';ta.value=a.note||'';
     ta.addEventListener('input',function(){a.note=ta.value;setDirty(true)});ta.addEventListener('click',function(e){e.stopPropagation()});
     div.appendChild(ta);
@@ -1013,7 +1019,32 @@ function confirmSave(fileName,folder){
     }
     if(cy>off.height-40*bScale)break;
   }
-  vscodeApi.postMessage({type:'saveAnnotations',screenshotDataUrl:off.toDataURL(),annotations:annotations,fileName:fileName,folder:folder});
+  var exportedAnnotations = annotations.map(function(a) {
+    if (a.type === 'box') {
+      return {
+        id: a.id,
+        label: a.label || a.id,
+        type: a.type,
+        top_left_x: parseFloat(a.x.toFixed(2)),
+        top_left_y: parseFloat(a.y.toFixed(2)),
+        w: parseFloat(a.w.toFixed(2)),
+        h: parseFloat(a.h.toFixed(2)),
+        note: a.note
+      };
+    } else {
+      return {
+        id: a.id,
+        label: a.label || a.id,
+        type: a.type,
+        x1: parseFloat(a.x1.toFixed(2)),
+        y1: parseFloat(a.y1.toFixed(2)),
+        x2: parseFloat(a.x2.toFixed(2)),
+        y2: parseFloat(a.y2.toFixed(2)),
+        note: a.note
+      };
+    }
+  });
+  vscodeApi.postMessage({type:'saveAnnotations',screenshotDataUrl:off.toDataURL(),annotations:exportedAnnotations,imageWidth:currentImage.width,imageHeight:currentImage.height,fileName:fileName,folder:folder});
 }
 function triggerSave(isNew){
   var h3=saveModal.querySelector('h3');
@@ -1130,7 +1161,14 @@ window.addEventListener('message',function(e){
     nextVersion=Math.max(nextVersion,maxV+1);
 
     if(msg.files&&msg.files.length>0)savedAnnotationsWrap.classList.remove('hidden')}
-  else if(msg.type==='annotationsLoaded'){annotations=msg.annotations||[];currentFileName=msg.fileName;setDirty(false);activeTool=null;updateFileDisplay();toggleAnnotationMode(true);renderNotes()}
+  else if(msg.type==='annotationsLoaded'){
+    var loaded = msg.annotations||[];
+    annotations = loaded.map(function(a){
+      if(a.top_left_x!==undefined){a.x=a.top_left_x;a.y=a.top_left_y}
+      return a;
+    });
+    currentFileName=msg.fileName;setDirty(false);activeTool=null;updateFileDisplay();toggleAnnotationMode(true);renderNotes()
+  }
   else if(msg.type==='folderPicked'){chosenFolder=msg.folder;saveLocationInput.value=msg.folder}
   else if(msg.type==='cropPresets'){cropPresets=msg.presets&&msg.presets.length?msg.presets:[{amount:25,edge:'top'}];renderCropPresets()}
 });
