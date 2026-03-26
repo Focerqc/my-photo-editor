@@ -126,8 +126,12 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
         case 'listSavedAnnotations': {
           try {
             const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(imageDir));
+            const base = 'zMarkdown_' + originalFileName.replace(/\.[^.]+$/, '');
             const files = entries
-              .filter(([n]) => n.toLowerCase().endsWith('.annotations.json'))
+              .filter(([n]) => {
+                const name = n.toLowerCase();
+                return name.endsWith('.annotations.json') && (n === base + '.annotations.json' || n.startsWith(base + '_A'));
+              })
               .map(([n]) => ({
                 name: n.substring(0, n.length - 17), 
                 fullPath: path.join(imageDir, n),
@@ -152,9 +156,12 @@ export class PhotoEditorProvider implements vscode.CustomEditorProvider<vscode.C
             vscode.window.showInformationMessage('Deleted: ' + message.fileName);
             // Refresh list
             const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(imageDir));
-            const files = entries.filter(([n]) => n.endsWith('.annotations.json')).map(([n]) => ({
-              name: n.replace('.annotations.json', ''), fullPath: imageDir + sep + n,
-            }));
+            const base = 'zMarkdown_' + originalFileName.replace(/\.[^.]+$/, '');
+            const files = entries
+              .filter(([n]) => n.toLowerCase().endsWith('.annotations.json') && (n === base + '.annotations.json' || n.startsWith(base + '_A')))
+              .map(([n]) => ({
+                name: n.replace('.annotations.json', ''), fullPath: imageDir + sep + n,
+              }));
             webviewPanel.webview.postMessage({ type: 'savedAnnotationsList', files });
           } catch (err: any) {
             vscode.window.showErrorMessage('Failed to delete: ' + (err?.message || err));
@@ -208,6 +215,8 @@ body{display:flex;flex-direction:column;height:100vh;overflow:hidden;font-family
 .btn-save{background:#2ea043;color:#fff}
 .btn-annot{background:#b8860b;color:#fff}.btn-annot.active{background:#daa520;color:#000}
 .btn-mirror{background:#8e44ad;color:#fff}.btn-mirror.active{background:#9b59b6;border:2px solid #fff}
+.btn-snap{background:#ff69b4;color:#fff}.btn-snap.active{background:#ff1493;border:2px solid #fff}
+.btn-edit-mode{background:#f1c40f;color:#000;font-size:10px;padding:2px 8px;border:none;border-radius:4px;cursor:pointer;opacity:0.8}.btn-edit-mode.active{opacity:1;box-shadow:0 0 5px #f1c40f}
 .toolbar button:disabled{opacity:.4;cursor:default;filter:none}
 .hidden{display:none!important}
 body.minimized .toolbar{border-bottom:none}
@@ -241,6 +250,8 @@ canvas{display:block;width:100%;height:100%}
 .note-item-input{width:100%;padding:4px 6px;border:1px solid rgba(255,255,255,.15);border-radius:3px;background:rgba(0,0,0,.3);color:inherit;font-size:11px;font-family:inherit;resize:vertical;min-height:28px}
 .note-delete-btn{background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;padding:0 4px;opacity:.7;transition:opacity .15s}
 .note-delete-btn:hover{opacity:1}
+.note-copy-btn{background:none;border:none;color:#3498db;cursor:pointer;font-size:14px;padding:0 4px;opacity:.7;transition:opacity .15s}
+.note-copy-btn:hover{opacity:1}
 .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:2000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
 .modal{background:var(--vscode-editorWidget-background,#2d2d2d);border-radius:10px;padding:24px;width:640px;max-width:90%;border:1px solid rgba(255,255,255,.15)}
 .modal h3{margin-bottom:16px;font-size:15px}
@@ -326,6 +337,7 @@ canvas{display:block;width:100%;height:100%}
   <button class="btn-save" id="btnSave" disabled>Crops save</button>
 </div>
 <div class="annotation-toolbar hidden" id="annotToolbar">
+  <button id="btnSnapMode" class="btn-snap" style="padding:0;width:32px;height:32px;font-size:18px;margin-right:12px" title="Toggle Snap Mode (Align Top Edges)"><b>#</b></button>
   <div class="tool-group">
     <span>BOX:</span>
     <button class="atb-box" style="background:#e74c3c" data-tool="box" data-color="red" title="Red Box">&#9634;</button>
@@ -369,7 +381,13 @@ canvas{display:block;width:100%;height:100%}
   <div class="resizer hidden" id="resizer"></div>
   <div class="notes-panel hidden" id="notesPanel">
     <div id="sidebarNav"></div>
-    <div class="notes-header"><span>Annotations</span><span id="annotCount">0</span></div>
+    <div class="notes-header">
+      <span>Annotations</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button id="btnEditMode" class="btn-edit-mode">Edit Corners</button>
+        <span id="annotCount">0</span>
+      </div>
+    </div>
     <div class="notes-list" id="notesList"></div>
   </div>
 </div>
@@ -433,6 +451,8 @@ var sidebarNav=document.getElementById('sidebarNav');
 var navButtons=document.getElementById('navButtons');
 var btnSaveAnnotations=document.getElementById('btnSaveAnnotations');
 var btnNewSaveAnnotations=document.getElementById('btnNewSaveAnnotations');
+var countEl=document.getElementById('annotCount');
+var btnEditMode=document.getElementById('btnEditMode');
 var notesList=document.getElementById('notesList');
 var modalExistingList=document.getElementById('modalExistingList');
 var btnIncrement=document.getElementById('btnIncrement');
@@ -486,6 +506,7 @@ var btnCropPresetsBottom=document.getElementById('btnCropPresetsBottom');
 var cropPresetsWrap=document.getElementById('cropPresetsWrap');
 var cropPresetsDropdownTop=document.getElementById('cropPresetsDropdownTop');
 var cropPresetsDropdownBottom=document.getElementById('cropPresetsDropdownBottom');
+var btnSnapMode=document.getElementById('btnSnapMode');
 
 /* ── annotation state ─────────────── */
 var annotationMode=false;
@@ -493,8 +514,19 @@ var annotations=[];
 var activeTool=null; // {type:'box'|'line', color:string}
 var selectedAnnotId=null;
 var annotDrag=null; // drawing or moving annotation
-var colorCounters={red:0,blue:0,green:0,yellow:0};
 var COLOR_HEX={red:'#e74c3c',blue:'#3498db',green:'#2ecc71',yellow:'#f1c40f'};
+function getNextId(color, type){
+  var prefix = color.charAt(0).toUpperCase() + color.slice(1) + (type === 'box' ? 'Box' : 'Line');
+  var maxNum = 0;
+  for (var i = 0; i < annotations.length; i++) {
+    var id = annotations[i].id;
+    if (id && id.startsWith(prefix)) {
+      var num = parseInt(id.substring(prefix.length));
+      if (!isNaN(num) && num > maxNum) maxNum = num;
+    }
+  }
+  return prefix + (maxNum + 1);
+}
 var EDGE_COLORS={top:'#2ea043',bottom:'#0e639c',left:'#e67e22',right:'#9b59b6'};
 var hasSavedAnnotations=false;
 var chosenFolder='';
@@ -502,6 +534,9 @@ var nextVersion=1;
 var currentFiles=[];
 var scrollbarW=0,scrollbarH=0;
 var isDirty=false;
+var snapMode=false;
+var editMode=false;
+var snapGuides=[];
 function setDirty(v){isDirty=v;var el=document.getElementById('unsavedIndicatorMain');if(el)el.classList.toggle('hidden',!v)}
 
 function sizeCanvas(){if(!wrapper||!canvas)return;canvas.width=wrapper.clientWidth;canvas.height=wrapper.clientHeight}
@@ -539,17 +574,26 @@ function drawAnnotations(){
   var s=eff();
   for(var i=0;i<annotations.length;i++){
     var a=annotations[i];var sel=a.id===selectedAnnotId;
+    if(!a.color || !COLOR_HEX[a.color]) a.color = 'red';
+    var hex = COLOR_HEX[a.color];
     ctx.save();
     if(a.type==='box'){
       var ax=a.x*s+offsetX,ay=a.y*s+offsetY,aw=a.w*s,ah=a.h*s;
-      ctx.fillStyle=COLOR_HEX[a.color]+'33';ctx.fillRect(ax,ay,aw,ah);
-      ctx.strokeStyle=COLOR_HEX[a.color];ctx.lineWidth=sel?3:2;ctx.setLineDash([]);ctx.strokeRect(ax,ay,aw,ah);
-      ctx.font='bold 11px system-ui';ctx.fillStyle=COLOR_HEX[a.color];ctx.fillText(a.id,ax+4,ay+14);
+      ctx.strokeStyle=hex;ctx.lineWidth=sel?3:2;ctx.setLineDash([]);ctx.strokeRect(ax,ay,aw,ah);
+      ctx.setLineDash([]);ctx.font='bold 11px system-ui';ctx.fillStyle=hex;ctx.fillText(a.id,ax+4,ay+14);
+      
+      if(editMode){
+        ctx.fillStyle='#fff';ctx.lineWidth=1;ctx.strokeStyle='#000';
+        var r=4;
+        [ {x:ax,y:ay},{x:ax+aw,y:ay},{x:ax+aw,y:ay+ah},{x:ax,y:ay+ah} ].forEach(function(p){
+          ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill();ctx.stroke();
+        });
+      }
     }else{
       var x1=a.x1*s+offsetX,y1=a.y1*s+offsetY,x2=a.x2*s+offsetX,y2=a.y2*s+offsetY;
-      ctx.strokeStyle=COLOR_HEX[a.color];ctx.lineWidth=sel?3:2;ctx.setLineDash([8,4]);
+      ctx.strokeStyle=hex;ctx.lineWidth=sel?3:2;ctx.setLineDash([8,4]);
       ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
-      ctx.setLineDash([]);ctx.font='bold 11px system-ui';ctx.fillStyle=COLOR_HEX[a.color];ctx.fillText(a.id,(x1+x2)/2+4,(y1+y2)/2-6);
+      ctx.setLineDash([]);ctx.font='bold 11px system-ui';ctx.fillStyle=hex;ctx.fillText(a.id,(x1+x2)/2+4,(y1+y2)/2-6);
     }
     ctx.restore();
   }
@@ -627,7 +671,17 @@ function draw(){
       }else{btnMirrorConfirm.classList.add('hidden');btnMirrorX.classList.add('hidden')}
     }else{btnMirrorConfirm.classList.add('hidden');btnMirrorX.classList.add('hidden')}
   }else{ctx.drawImage(currentImage,imgX,imgY,imgW,imgH);mirrorFT.classList.add('hidden')}
-  drawAnnotations();drawScrollbars();updateStatus();
+  drawAnnotations();drawScrollbars();
+  
+  if(snapMode && snapGuides.length>0){
+    ctx.save();
+    ctx.setLineDash([4,4]);ctx.strokeStyle='rgba(255,105,180,0.6)';ctx.lineWidth=1;
+    snapGuides.forEach(function(g){
+      ctx.beginPath();ctx.moveTo(g.x1*s+offsetX,g.y1*s+offsetY);ctx.lineTo(g.x2*s+offsetX,g.y2*s+offsetY);ctx.stroke();
+    });
+    ctx.restore();
+  }
+  updateStatus();
 }
 
 function getHandles(){
@@ -648,6 +702,17 @@ function isInsideCrop(mx,my){if(!crop)return false;var s=eff(),cx=crop.x*s+offse
 function hitHBar(mx,my){if(!hBar)return false;return mx>=hBar.thumbX&&mx<=hBar.thumbX+hBar.thumbW&&my>=hBar.tY&&my<=hBar.tY+hBar.tH}
 function hitHTrack(mx,my){if(!hBar)return false;return mx>=hBar.tX&&mx<=hBar.tX+hBar.tW&&my>=hBar.tY&&my<=hBar.tY+hBar.tH}
 function hitVBar(mx,my){if(!vBar)return false;return mx>=vBar.tX&&mx<=vBar.tX+vBar.tW&&my>=vBar.thumbY&&my<=vBar.thumbY+vBar.thumbH}
+function hitAnnotHandle(mx,my){
+  if(!editMode)return null;
+  var s=eff();
+  for(var i=0;i<annotations.length;i++){
+    var a=annotations[i];if(a.type!=='box')continue;
+    var ax=a.x*s+offsetX,ay=a.y*s+offsetY,aw=a.w*s,ah=a.h*s;
+    var h=[{id:'tl',x:ax,y:ay},{id:'tr',x:ax+aw,y:ay},{id:'br',x:ax+aw,y:ay+ah},{id:'bl',x:ax,y:ay+ah}];
+    for(var j=0;j<h.length;j++){if(Math.hypot(mx-h[j].x,my-h[j].y)<10)return {ann:a,handle:h[j].id}}
+  }
+  return null;
+}
 function hitVTrack(mx,my){if(!vBar)return false;return mx>=vBar.tX&&mx<=vBar.tX+vBar.tW&&my>=vBar.tY&&my<=vBar.tY+vBar.tH}
 
 function hitAnnotation(mx,my){
@@ -667,9 +732,19 @@ function renderNotes(){
     var div=document.createElement('div');div.className='note-item'+(a.id===selectedAnnotId?' selected':'');div.style.borderLeftColor=COLOR_HEX[a.color];
     var hdr=document.createElement('div');hdr.className='note-item-header';
     var lbl=document.createElement('span');lbl.className='note-item-label';lbl.textContent=a.label || a.id;
+    var act=document.createElement('div');
+    var cp=document.createElement('button');cp.className='note-copy-btn';cp.textContent='❐';cp.title='Copy & Paste (Duplicate)';
+    cp.onclick=function(e){e.stopPropagation();
+      var t=a.type;
+      var newId=getNextId(a.color, t);
+      var copyAnn=JSON.parse(JSON.stringify(a));
+      copyAnn.id=newId;
+      if(t==='box'){copyAnn.x+=20;copyAnn.y+=20}else{copyAnn.x1+=20;copyAnn.y1+=20;copyAnn.x2+=20;copyAnn.y2+=20}
+      annotations.push(copyAnn);selectedAnnotId=newId;setDirty(true);renderNotes();draw()};
     var del=document.createElement('button');del.className='note-delete-btn';del.textContent='x';del.title='Delete';
     del.addEventListener('click',function(e){e.stopPropagation();annotations.splice(idx,1);if(selectedAnnotId===a.id)selectedAnnotId=null;setDirty(true);renderNotes();draw()});
-    hdr.appendChild(lbl);hdr.appendChild(del);div.appendChild(hdr);
+    act.appendChild(cp);act.appendChild(del);
+    hdr.appendChild(lbl);hdr.appendChild(act);div.appendChild(hdr);
     var coords=document.createElement('div');coords.className='note-item-coords';
     if(a.type==='box'){coords.textContent='x:'+Math.round(a.x)+' y:'+Math.round(a.y)+' w:'+Math.round(a.w)+' h:'+Math.round(a.h)}
     else{coords.textContent='x1:'+Math.round(a.x1)+' y1:'+Math.round(a.y1)+' x2:'+Math.round(a.x2)+' y2:'+Math.round(a.y2)}
@@ -694,6 +769,14 @@ canvas.addEventListener('mousedown',function(e){
   if(hitHTrack(mx,my)&&hBar){var dir=mx<hBar.thumbX?1:-1;offsetX+=dir*canvas.width*0.8;clampOffsets();draw();return}
   if(hitVTrack(mx,my)&&vBar){var dir=my<vBar.thumbY?1:-1;offsetY+=dir*canvas.height*0.8;clampOffsets();draw();return}
   if(annotationMode){
+    if(editMode){
+      var h=hitAnnotHandle(mx,my);
+      if(h){
+        var ip=scrToImg(mx,my);
+        annotDrag={type:'resizeBox',ann:h.ann,handle:h.handle,startImg:ip,origX:h.ann.x,origY:h.ann.y,origW:h.ann.w,origH:h.ann.h};
+        return;
+      }
+    }
     if(activeTool){var ip=scrToImg(mx,my);annotDrag={type:'draw',startImg:ip,tool:activeTool};return}
     var hitA=hitAnnotation(mx,my);
     if(hitA){selectedAnnotId=hitA.id;renderNotes();draw();var ip2=scrToImg(mx,my);
@@ -718,7 +801,37 @@ canvas.addEventListener('mousemove',function(e){
       if(annotDrag.tool.type==='box'){var bx=Math.min(si.x,ci.x)*s+offsetX,by=Math.min(si.y,ci.y)*s+offsetY,bw=Math.abs(ci.x-si.x)*s,bh=Math.abs(ci.y-si.y)*s;ctx.strokeStyle=COLOR_HEX[annotDrag.tool.color];ctx.lineWidth=2;ctx.strokeRect(bx,by,bw,bh)}
       else{ctx.strokeStyle=COLOR_HEX[annotDrag.tool.color];ctx.lineWidth=2;ctx.setLineDash([8,4]);ctx.beginPath();ctx.moveTo(si.x*s+offsetX,si.y*s+offsetY);ctx.lineTo(ci.x*s+offsetX,ci.y*s+offsetY);ctx.stroke();ctx.setLineDash([])}
       return}
-    if(annotDrag.type==='moveBox'){var ddx=ip.x-annotDrag.startImg.x,ddy=ip.y-annotDrag.startImg.y;annotDrag.ann.x=annotDrag.origX+ddx;annotDrag.ann.y=annotDrag.origY+ddy;renderNotes();draw();return}
+    if(annotDrag.type==='moveBox'){
+      var ddx=ip.x-annotDrag.startImg.x,ddy=ip.y-annotDrag.startImg.y;
+      var newX=annotDrag.origX+ddx,newY=annotDrag.origY+ddy;
+      snapGuides=[];
+      if(snapMode){
+        for(var i=0;i<annotations.length;i++){
+           var other=annotations[i];
+           if(other===annotDrag.ann || other.type!=='box')continue;
+           // Vertical snap (top edges)
+           if(Math.abs(newY - other.y) < 10){
+              newY=other.y;
+              snapGuides.push({x1:Math.min(newX,other.x),y1:newY,x2:Math.max(newX+annotDrag.ann.w,other.x+other.w),y2:newY});
+           }
+           // Horizontal snap (left edges)
+           if(Math.abs(newX - other.x) < 10){
+              newX=other.x;
+              snapGuides.push({x1:newX,y1:Math.min(newY,other.y),x2:newX,y2:Math.max(newY+annotDrag.ann.h,other.y+other.h)});
+           }
+        }
+      }
+      annotDrag.ann.x=newX;annotDrag.ann.y=newY;
+      renderNotes();draw();return}
+    if(annotDrag.type==='resizeBox'){
+      var idx=ip.x-annotDrag.startImg.x,idy=ip.y-annotDrag.startImg.y;
+      var a=annotDrag.ann;
+      if(annotDrag.handle.includes('r')){a.w=Math.max(10,annotDrag.origW+idx)}
+      if(annotDrag.handle.includes('l')){var nw=Math.max(10,annotDrag.origW-idx);a.x=annotDrag.origX+(annotDrag.origW-nw);a.w=nw}
+      if(annotDrag.handle.includes('b')){a.h=Math.max(10,annotDrag.origH+idy)}
+      if(annotDrag.handle.includes('t')){var nh=Math.max(10,annotDrag.origH-idy);a.y=annotDrag.origY+(annotDrag.origH-nh);a.h=nh}
+      renderNotes();draw();return;
+    }
     if(annotDrag.type==='moveLine'){var ddx2=ip.x-annotDrag.startImg.x,ddy2=ip.y-annotDrag.startImg.y;annotDrag.ann.x1=annotDrag.origX1+ddx2;annotDrag.ann.y1=annotDrag.origY1+ddy2;annotDrag.ann.x2=annotDrag.origX2+ddx2;annotDrag.ann.y2=annotDrag.origY2+ddy2;renderNotes();draw();return}
   }
   if(!drag){canvas.style.cursor=(annotationMode&&activeTool)?'crosshair':(annotationMode&&hitAnnotation(mx,my))?'move':'default';return}
@@ -752,10 +865,10 @@ canvas.addEventListener('mousemove',function(e){
 });
 
 window.addEventListener('mouseup',function(){
+  snapGuides=[];
   if(annotDrag&&annotDrag.type==='draw'&&annotDrag.currentImg){
     var si=annotDrag.startImg,ci=annotDrag.currentImg,t=annotDrag.tool;
-    colorCounters[t.color]=(colorCounters[t.color]||0)+1;
-    var id=t.color.charAt(0).toUpperCase()+t.color.slice(1)+(t.type==='box'?'Box':'Line')+colorCounters[t.color];
+    var id=getNextId(t.color, t.type);
     if(t.type==='box'){var bx=Math.min(si.x,ci.x),by=Math.min(si.y,ci.y),bw=Math.abs(ci.x-si.x),bh=Math.abs(ci.y-si.y);if(bw>5&&bh>5){annotations.push({id:id,type:'box',color:t.color,x:bx,y:by,w:bw,h:bh,note:''});setDirty(true)}}
     else{if(Math.hypot(ci.x-si.x,ci.y-si.y)>5){annotations.push({id:id,type:'line',color:t.color,x1:si.x,y1:si.y,x2:ci.x,y2:ci.y,note:''});setDirty(true)}}
     renderNotes();draw()}
@@ -970,7 +1083,7 @@ function confirmSave(fileName,folder){
   
   for(var i=0;i<annotations.length;i++){var a=annotations[i];
     oc.strokeStyle=COLOR_HEX[a.color];oc.lineWidth=lw;
-    if(a.type==='box'){oc.strokeRect(a.x,a.y,a.w,a.h);oc.fillStyle=COLOR_HEX[a.color]+'33';oc.fillRect(a.x,a.y,a.w,a.h)}
+    if(a.type==='box'){oc.strokeRect(a.x,a.y,a.w,a.h)}
     else{oc.setLineDash([16*bScale,8*bScale]);oc.beginPath();oc.moveTo(a.x1,a.y1);oc.lineTo(a.x2,a.y2);oc.stroke();oc.setLineDash([])}
     oc.fillStyle=COLOR_HEX[a.color];oc.font='bold '+labelFS+'px system-ui';
     var textY=(a.type==='box'?a.y:a.y1)-(10*bScale);
@@ -998,6 +1111,7 @@ function confirmSave(fileName,folder){
         id: a.id,
         label: a.label || a.id,
         type: a.type,
+        color: a.color,
         top_left_x: parseFloat(a.x.toFixed(2)),
         top_left_y: parseFloat(a.y.toFixed(2)),
         w: parseFloat(a.w.toFixed(2)),
@@ -1009,6 +1123,7 @@ function confirmSave(fileName,folder){
         id: a.id,
         label: a.label || a.id,
         type: a.type,
+        color: a.color,
         x1: parseFloat(a.x1.toFixed(2)),
         y1: parseFloat(a.y1.toFixed(2)),
         x2: parseFloat(a.x2.toFixed(2)),
@@ -1138,6 +1253,13 @@ window.addEventListener('message',function(e){
     var loaded = msg.annotations||[];
     annotations = loaded.map(function(a){
       if(a.top_left_x!==undefined){a.x=a.top_left_x;a.y=a.top_left_y}
+      if(!a.color && a.id){
+        var idL = a.id.toLowerCase();
+        if(idL.startsWith('red'))a.color='red';
+        else if(idL.startsWith('blue'))a.color='blue';
+        else if(idL.startsWith('green'))a.color='green';
+        else if(idL.startsWith('yellow'))a.color='yellow';
+      }
       return a;
     });
     currentFileName=msg.fileName;setDirty(false);activeTool=null;updateFileDisplay();toggleAnnotationMode(true);renderNotes()
@@ -1160,6 +1282,8 @@ if(IS_EXPORT){
   if(btnAnnotationMode)btnAnnotationMode.style.display='none';
 }
 loadImage(IMAGE_SRC,function(img){originalImage=img;currentImage=img;sizeCanvas();baseScale=computeFit(img);centerImage();draw();if(!IS_EXPORT)vscodeApi.postMessage({type:'listSavedAnnotations'})});
+btnSnapMode.onclick=function(){snapMode=!snapMode;btnSnapMode.classList.toggle('active',snapMode);snapGuides=[];draw()};
+btnEditMode.onclick=function(){editMode=!editMode;btnEditMode.classList.toggle('active',editMode);draw()};
 })();
 </script>
 </body></html>`;
